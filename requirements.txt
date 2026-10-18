@@ -1,0 +1,2 @@
+# RecoverOps AI Phase 1 intentionally uses only the Python 3.11 standard library.
+# This file is kept as the reproducible dependency lockfile for the project.

@@ -1,0 +1,28 @@
+# Python caches and tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local environments and configuration
+.venv/
+venv/
+env/
+.env
+
+# Local runtime data
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Build and editor noise
+dist/
+build/
+.coverage
+coverage.xml
+.DS_Store
+.idea/
+.vscode/
