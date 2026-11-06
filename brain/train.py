@@ -28,7 +28,14 @@ from brain.model import RecoverBrainModel
 from brain.sandbox import resolve_brain_path
 from brain.tokenizer import BrainTokenizer, PAD_ID, SEP_ID, BOS_ID, EOS_ID
 
-VALID_STRATEGIES = ["RETRY", "RESET_SERVICE", "RESTORE_FILE", "SANITIZE_DATA", "ESCALATE"]
+VALID_STRATEGIES = [
+    "RETRY",
+    "RESET_SERVICE",
+    "RESTORE_FILE",
+    "SANITIZE_DATA",
+    "ROLLBACK_REPLAY",
+    "ESCALATE",
+]
 
 
 def find_safe_batch_size(
@@ -198,11 +205,16 @@ def train(
     loss_on_target_only: bool = True,
     eval_every_steps: int = 75,
     patience: int = 6,
+    seed: int = 42,
+    label_shuffle: bool = False,
+    checkpoint_suffix: str = "",
 ) -> dict[str, Any]:
     """Execute end-to-end training loop for RecoverBrain."""
     print("=" * 70)
-    print(f" RecoverBrain Training Engine: Preset '{preset_name.upper()}'")
+    print(f" RecoverBrain Training Engine: Preset '{preset_name.upper()}' | Seed: {seed}")
     print(f" Loss Mode: {'TARGET-ONLY (Observation Masked)' if loss_on_target_only else 'FULL SEQUENCE'}")
+    if label_shuffle:
+        print(" CONTROL: LABEL SHUFFLE ACTIVE (Targets randomly permuted)")
     print("=" * 70)
 
     if not torch.cuda.is_available():
@@ -211,8 +223,8 @@ def train(
     device = torch.device("cuda:0")
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.benchmark = True
-    torch.manual_seed(42)
-    np.random.seed(42)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
     config = get_preset(preset_name)
     model = RecoverBrainModel(config).to(device)
@@ -240,9 +252,25 @@ def train(
 
     tokenizer = BrainTokenizer.load("data/tokenizer.json")
     print("Loading packed token arrays directly into system memory...")
-    train_data = np.load(str(train_npy))
+    train_data = np.load(str(train_npy)).copy()
     val_data = np.load(str(val_npy))
     print(f"Loaded: train={len(train_data):,} samples, val={len(val_data):,} samples (seq_len={config.max_seq_len})")
+
+    if label_shuffle:
+        print("[Control] Applying label shuffle to train targets...")
+        shuffled_targets = []
+        for seq in train_data:
+            sep_pos = np.where(seq == SEP_ID)[0]
+            if len(sep_pos) > 0:
+                shuffled_targets.append(seq[sep_pos[0] + 1:].copy())
+            else:
+                shuffled_targets.append(seq.copy())
+        rng_perm = np.random.RandomState(seed)
+        rng_perm.shuffle(shuffled_targets)
+        for i, seq in enumerate(train_data):
+            sep_pos = np.where(seq == SEP_ID)[0]
+            if len(sep_pos) > 0:
+                train_data[i, sep_pos[0] + 1:] = shuffled_targets[i]
 
     # Determine batch size & gradient accumulation
     if manual_batch_size is not None and manual_grad_accum is not None:
@@ -415,14 +443,18 @@ def train(
                         "config": config,
                     }
 
-                    latest_path = ckpt_dir / f"checkpoint_{preset_name}_latest.pt"
+                    tag = f"_{checkpoint_suffix}" if checkpoint_suffix else ""
+                    latest_path = ckpt_dir / f"checkpoint_{preset_name}{tag}_latest.pt"
                     torch.save(save_payload, str(latest_path))
 
                     if val_macro_f1 > best_val_macro_f1:
                         best_val_macro_f1 = val_macro_f1
                         no_improve_count = 0
-                        best_path = ckpt_dir / f"checkpoint_{preset_name}_best.pt"
+                        best_path = ckpt_dir / f"checkpoint_{preset_name}{tag}_best.pt"
                         torch.save(save_payload, str(best_path))
+                        # Also save un-suffixed checkpoint if training primary model
+                        if not checkpoint_suffix:
+                            torch.save(save_payload, str(ckpt_dir / f"checkpoint_{preset_name}_best.pt"))
                         print(
                             f"  * New best validation Macro-F1: {best_val_macro_f1*100:.2f}% -> Saved {best_path.name}",
                             flush=True,
@@ -450,7 +482,8 @@ def train(
         model, val_data, tokenizer, device, max_samples=1000
     )
 
-    final_path = ckpt_dir / f"checkpoint_{preset_name}_final.pt"
+    tag = f"_{checkpoint_suffix}" if checkpoint_suffix else ""
+    final_path = ckpt_dir / f"checkpoint_{preset_name}{tag}_final.pt"
     torch.save(
         {
             "preset": preset_name,
@@ -462,6 +495,18 @@ def train(
         },
         str(final_path),
     )
+    if not checkpoint_suffix:
+        torch.save(
+            {
+                "preset": preset_name,
+                "step": step,
+                "model_state_dict": model.state_dict(),
+                "final_macro_f1": final_macro_f1,
+                "final_val_loss": final_val_loss,
+                "config": config,
+            },
+            str(ckpt_dir / f"checkpoint_{preset_name}_final.pt"),
+        )
 
     print("\n" + "=" * 70)
     print(f" Training Completed in {total_training_time:.1f}s ({total_training_time/60:.2f} min)")
@@ -514,6 +559,9 @@ def main() -> None:
     )
     parser.add_argument("--eval-every", type=int, default=75, help="Steps between validation evaluations")
     parser.add_argument("--patience", type=int, default=6, help="Early stopping patience cycles")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for model initialization and data shuffling")
+    parser.add_argument("--label-shuffle", action="store_true", help="Control: randomly shuffle training labels")
+    parser.add_argument("--checkpoint-suffix", type=str, default="", help="Suffix for checkpoint file names")
     args = parser.parse_args()
 
     train(
@@ -531,6 +579,9 @@ def main() -> None:
         loss_on_target_only=args.loss_on_target_only,
         eval_every_steps=args.eval_every,
         patience=args.patience,
+        seed=args.seed,
+        label_shuffle=args.label_shuffle,
+        checkpoint_suffix=args.checkpoint_suffix,
     )
 
 

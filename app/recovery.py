@@ -65,6 +65,15 @@ class RecoveryManager:
         if failure_category == FailureCategory.UNRECOVERABLE_ERROR:
             return RecoveryStrategy.ESCALATE
 
+        if failure_category == FailureCategory.RATE_LIMIT_EXCEEDED:
+            return RecoveryStrategy.RETRY
+
+        if failure_category == FailureCategory.TRANSACTION_DEADLOCK:
+            return RecoveryStrategy.ROLLBACK_REPLAY
+
+        if failure_category == FailureCategory.DISK_QUOTA_EXCEEDED:
+            return RecoveryStrategy.PURGE_TEMP
+
         if failure_category == FailureCategory.VERIFICATION_FAILURE:
             params = task.parameters
             if "sanitized_data" in params:
@@ -188,6 +197,14 @@ class RecoveryManager:
 
             elif strategy == RecoveryStrategy.SANITIZE_DATA:
                 details = simulator.sanitize_data(task)
+                applied = True
+
+            elif strategy == RecoveryStrategy.ROLLBACK_REPLAY:
+                details = simulator.rollback_replay(task)
+                applied = True
+
+            elif strategy == RecoveryStrategy.PURGE_TEMP:
+                details = simulator.purge_temp(task)
                 applied = True
 
         except Exception as e:

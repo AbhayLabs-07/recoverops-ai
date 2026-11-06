@@ -108,7 +108,7 @@ When a task attempt fails verification or raises an execution exception, `Recove
 [5. Shared Recoveries >= Budget?] ---> YES ---> ESCALATE (Workflow budget exhausted)
         | NO
         v
-[6. Select Strategy] ---------------> RETRY | RESET_SERVICE | RESTORE_FILE | SANITIZE
+[6. Select Strategy] ---------------> RETRY | RESET_SERVICE | RESTORE_FILE | SANITIZE | ROLLBACK_REPLAY | PURGE_TEMP
 ```
 
 ### Invariant: Budget Ownership

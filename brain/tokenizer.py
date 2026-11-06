@@ -23,6 +23,8 @@ DOMAIN_VOCABULARY = [
     "RESTORE_FILE",
     "SANITIZE_DATA",
     "ESCALATE",
+    "ROLLBACK_REPLAY",
+    "PURGE_TEMP",
     "SUCCEEDED",
     "RECOVERED",
     "FAILED",
@@ -35,12 +37,18 @@ DOMAIN_VOCABULARY = [
     "missing_file",
     "invalid_data",
     "unrecoverable",
+    "rate_limited",
+    "deadlock",
+    "disk_quota",
     "transient_service_error",
     "timeout_error",
     "missing_file_error",
     "invalid_data_error",
     "verification_failure",
     "unrecoverable_error",
+    "rate_limit_exceeded",
+    "transaction_deadlock",
+    "disk_quota_exceeded",
     "none",
     # Verification criteria
     "output_equals",
@@ -210,9 +218,12 @@ class BrainTokenizer:
         flush_bytes()
         return "".join(string_parts)
 
-    def save(self, relative_path: str) -> None:
+    def save(self, destination: str | Path = "data/tokenizer.json") -> None:
         """Persist tokenizer vocabulary into brain/sandbox/."""
-        target = resolve_brain_path(relative_path)
+        if isinstance(destination, Path):
+            target = destination
+        else:
+            target = resolve_brain_path(destination)
         data = {
             "vocab_size": self.vocab_size,
             "token_to_id": self.token_to_id,

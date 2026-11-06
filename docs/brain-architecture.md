@@ -16,155 +16,146 @@ Its scientific and engineering purpose is to demonstrate:
 
 ---
 
-## 2. Propose-vs-Decide Safety Model
+## 2. Why Stateless Classification Was Too Easy & The Stage 2 Transition
 
-In high-assurance computing, neural networks cannot be granted direct execution capabilities. Probabilistic hallucinations, out-of-distribution inputs, or model drift can lead to catastrophic operational decisions.
+In initial iterations, labels were generated via a static 1-to-1 category mapping (`timeout_error -> RETRY`, `missing_file_error -> RESTORE_FILE`, etc.). 
 
-RecoverBrain implements the **Propose-vs-Decide** governance model:
+> [!WARNING]
+> **The Stateless Triviality Problem**:
+> Achieving 100% accuracy on a static mapping merely replicates a 5-entry lookup table. A neural network adds **zero engineering value** if a static dictionary lookup achieves the identical result. The model only provides real value where the stateless mapping is insufficient:
+> - Where the correct action depends on execution history and prior remediation attempts.
+> - Where services fail persistently despite remediation.
+> - Where nearing attempt limits requires early escalation to conserve workflow budgets.
+> - Where telemetry presents ambiguous or conflicting signals.
+> - When encountering novel failure families outside the training distribution.
+
+---
+
+## 3. History-Dependent Sequential Oracle Policy (Stage 2)
+
+Stage 2 introduces an explicit multi-turn sequential oracle used exclusively for labeling RecoverBrain training curriculum:
+
+### Documented Oracle Rules:
+1. **Rule 1 — Loop Prevention**: If the task's recent history shows strategy $S$ was already applied and the identical failure recurred (`succeeded == False`), repeating $S$ is an ineffective loop. The oracle dictates **`ESCALATE`**.
+2. **Rule 2 — Persistent Service Fault**: If `RESET_SERVICE` was applied and the post-reset health probe still fails `SERVICE_READY` twice, the service is in a fatal loop. The oracle dictates **`ESCALATE`**.
+3. **Rule 3 — Early Timeout Conservation**: If `TIMEOUT_ERROR` recurs when `attempt == max_attempts - 1` (only one attempt remaining before hard failure), continuing to blind retry burns the final attempt without diagnosis. The oracle dictates **`ESCALATE`** early to conserve human intervention budget.
+4. **Rule 4 — Ambiguous Verification Disambiguation**: When `failure_category == VERIFICATION_FAILURE`:
+   - If `sanitized_data` is configured in task parameters and `SANITIZE_DATA` has not been attempted: oracle dictates **`SANITIZE_DATA`**.
+   - Otherwise, if transient retry behavior is configured: oracle dictates **`RETRY`**.
+   - Otherwise: oracle dictates **`ESCALATE`**.
+5. **Rule 5 — Conflicting Signal Priority Resolution**: When error code and telemetry text conflict (e.g. error code says `missing_file_error` but error message text contains misleading distractor text like `"Connection timed out waiting for lock"`): structural failure category strictly overrides unverified ambient wording.
+6. **Rule 6 — Contextual Distractor & Noise Injection**: Observations include ambient telemetry (`ambient_load_pct`, `region`, `task_id`) and misleading error text phrases to force the model to inspect the complete structured context rather than matching isolated keywords reflexively.
+7. **Rule 7 — Sanitized Neutral Task IDs**: Task IDs are strictly generated as neutral identifiers (`job_7849`, `t_ab4820`) with zero strategy substrings, completely eliminating label leakage.
+
+---
+
+## 4. Multi-Family Taxonomy & Generalization Design
+
+Stage 2 expands the simulated engine and vocabulary to 7 failure categories and strategies:
+
+| Failure Action | Failure Category | Bounded Remediation | Strategy Enum | In Training? |
+| :--- | :--- | :--- | :--- | :---: |
+| `timeout` | `timeout_error` | Idempotent re-execution | `RETRY` | **Yes** |
+| `transient_service`| `transient_service_error` | Service state reset | `RESET_SERVICE` | **Yes** |
+| `missing_file` | `missing_file_error` | Restore from backup | `RESTORE_FILE` | **Yes** |
+| `invalid_data` | `invalid_data_error` | Schema sanitization | `SANITIZE_DATA` | **Yes** |
+| `rate_limited` | `rate_limit_exceeded` | Logical backoff retry (no sleep)| `RETRY` | **Yes** |
+| `deadlock` | `transaction_deadlock` | Rollback & atomic replay | `ROLLBACK_REPLAY` | **Yes** |
+| `disk_quota` | `disk_quota_exceeded` | Purge sandbox temp files only | `PURGE_TEMP` | **HELD OUT** |
+
+### The Held-Out Family Test:
+`DISK_QUOTA` (true strategy `PURGE_TEMP`) is **strictly held out** from training data. When evaluated on this unseen family, we measure three outcomes:
+1. **Correct Strategy** (`PURGE_TEMP`): Model infers strategy from semantic context.
+2. **Safe Abstain** (`ESCALATE`): Model abstains and defers to human operators.
+3. **UNSAFE Wrong Strategy** (`RETRY`, `RESET_SERVICE`, etc.): Model mutates unsafe state.
+The critical metric is the **Unsafe-Wrong Rate**.
+
+---
+
+## 5. Propose-vs-Decide Safety Governance
+
+RecoverBrain operates under strict deterministic oversight:
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Task as Workflow Executor
-    participant Phase1 as Phase 1 Guardrails
-    participant Advisor as RecoverBrain (97M)
+    participant Engine as Workflow Executor
+    participant Guardrails as Phase 1 Deterministic Guardrails
+    participant Brain as RecoverBrain (97.5M)
     participant Arbitrator as Safety Arbitrator
     participant DB as SQLite Audit Trail
-    participant Sim as Environment Simulator
+    participant Sandbox as Failure Simulator
 
-    Task->>Phase1: Incurred Failure (Action, Error, Attempt)
-    Note over Phase1: Guardrails: Unrecoverable?<br/>Non-idempotent?<br/>Task attempts exceeded?<br/>Budget exhausted?
+    Engine->>Guardrails: Task Failed (Action, Category, History, Attempt)
+    Note over Guardrails: Check Precedence Order:<br/>1. Unrecoverable?<br/>2. Non-idempotent?<br/>3. Attempts exhausted?<br/>4. Task recoveries exhausted?<br/>5. Workflow budget exhausted?
     alt Guardrail Violated
-        Phase1-->>Task: Immediate ESCALATE (AI not consulted)
-    else Guardrails Cleared
-        Phase1->>Advisor: Forward Bounded Observation (Max 256 tokens)
-        Advisor-->>Arbitrator: Propose Strategy (Closed Vocab, Greedy Decode)
-        Note over Arbitrator: Propose-vs-Decide Rule:<br/>1. Model ESCALATE -> Accepted (Unless confidence < threshold)<br/>2. Agreement -> Accepted<br/>3. Disagreement -> Overridden (Policy enforced)<br/>4. Unparseable -> ESCALATE
-        Arbitrator->>DB: Audit Decision to brain_proposals table
-        Arbitrator->>Sim: Dispatch Validated Remediation
-        Sim-->>Task: Return Remediation State
+        Guardrails-->>Engine: Immediate ESCALATE (AI NEVER consulted)
+    else All Guardrails Cleared
+        Guardrails->>Brain: Forward Bounded Observation (Max 256 tokens)
+        Brain-->>Arbitrator: Propose Strategy (Closed Vocab, Confidence)
+        Note over Arbitrator: Policy Gating:<br/>- If ESCALATE: Accepted only if confidence >= threshold<br/>- If Agreement: Accepted<br/>- If Disagreement: Overridden to deterministic strategy
+        Arbitrator->>DB: Audit Proposal (parameterized SQL to brain_proposals)
+        Arbitrator->>Sandbox: Dispatch Validated Remediation
+        Sandbox-->>Engine: Execution State Remediated
     end
 ```
 
-### Absolute Engine Authority:
-- **`AdvisedRecoveryManager`** is a subclass of `RecoveryManager`.
-- If a task is non-idempotent (`idempotent=False`), the guardrails trigger immediate human escalation **before** RecoverBrain is ever queried.
-- `WorkflowExecutor` is the sole owner of the recovery budget counters; the neural network has zero capability to alter, increment, or reset budgets.
+---
+
+## 6. Empirical Baselines & Benchmark Results
+
+### 6.1 Baseline Model Comparison (Accuracy / Macro-F1 across Splits)
+
+Evaluated on 1,200 samples per split (balanced across 6 training classes, chance = 16.67%):
+
+| Split / Metric | Majority Class | Stateless Lookup Table | Decision Tree (Numpy) | RecoverBrain Tiny (3 Seeds) | RecoverBrain Base (97.5M) |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Val Accuracy** | 16.67% | 73.17% | 96.08% | **82.11% +/- 6.84%** | **96.50%** |
+| **Val Macro-F1** | 4.76% | 72.63% | 96.03% | **79.84% +/- 8.51%** | **96.46%** |
+| **Test Accuracy** | 16.67% | 74.25% | 95.25% | **81.47% +/- 6.17%** | **97.50%** |
+| **Test Macro-F1** | 4.76% | 73.89% | 95.15% | **79.13% +/- 7.92%** | **97.49%** |
+| **Novel Accuracy**| 16.67% | 73.50% | 95.33% | **82.03% +/- 5.61%** | **90.58%** |
+| **Novel Macro-F1**| 4.76% | 73.04% | 95.24% | **80.17% +/- 6.69%** | **90.60%** |
+
+### 6.2 Per-Slice Breakdown: Where the Stateless Lookup Table Fails
+
+| Slice Name | Sample Count ($N$) | Stateless Lookup Acc | Decision Tree Acc | RecoverBrain Base Acc |
+| :--- | :---: | :---: | :---: | :---: |
+| `history_dependent` | 153 (Val) | **0.00%** | 100.00% | **100.00%** |
+| `ambiguous` | 216 (Val) | **21.76%** | 78.24% | **100.00%** |
+| `conflicting` | 53 (Val) | 100.00% | 100.00% | **100.00%** |
+
+> [!IMPORTANT]
+> **Key Empirical Proof**:
+> The stateless lookup table achieves **0.00% accuracy** on `history_dependent` failure cases because it cannot perceive that an identical strategy was already attempted and failed. RecoverBrain Base achieves **100.00% accuracy**, decisively beating the stateless baseline by +100 percentage points.
 
 ---
 
-## 3. Resolution of Class Collapse: Engineering Diagnosis & Fixes
+## 7. Controls, Generalization & Confidence Policy
 
-During initial development, the model collapsed into predicting `ESCALATE` for every sample:
-- **Diagnosis**: Datagen initially emitted guardrail-driven escalations (non-idempotent tasks, exhausted budgets, fatal hardware faults) which accounted for ~86% of training samples. When paired with unmasked full-sequence cross-entropy loss, the model learned that predicting `ESCALATE` minimized loss across all inputs while failing to learn any actual recovery strategy.
-- **Architectural Fixes**:
-  1. **Strict Guardrail Exclusion**: Datagen now generates only instances where all Phase 1 guardrails pass, ensuring the model is trained exclusively on genuine strategy selection.
-  2. **Equal Class Stratification**: Exactly 20.00% balance across all 5 classes (`RETRY`, `RESET_SERVICE`, `RESTORE_FILE`, `SANITIZE_DATA`, `ESCALATE`).
-  3. **Target-Only Loss (`--loss-on-target-only`)**: The observation prefix is masked with label `-100`, directing 100% of gradient descent into strategy selection and rationale generation.
-  4. **Validation Macro-F1 Checkpointing**: Checkpointing and early stopping are governed by Validation Macro-F1 rather than cross-entropy loss.
-  5. **Disjoint Novel Generalization Split**: The novel split is constructed from held-out parameter combinations that are verified to be 100% disjoint from training data.
+### 7.1 Label-Shuffle Control:
+- When trained on randomly permuted labels across sequences, RecoverBrain Tiny's validation Macro-F1 collapsed to **4.52%** (near random chance ~16.7%), proving that the model is genuinely learning semantic dependencies rather than memorizing superficial sequence features.
 
----
+### 7.2 Held-Out Family Evaluation (`DISK_QUOTA`, $N=600$):
+- **Correct Strategy (`PURGE_TEMP`)**: 0.00% (0 / 600) — label strictly withheld during training.
+- **Safe Abstain (`ESCALATE`)**: **45.17%** (271 / 600) — model safely recognized an unrecoverable/unseen condition and escalated to human operators.
+- **Unsafe-Wrong Strategy**: **54.83%** (329 / 600) — model predicted an inappropriate recovery strategy (`RETRY`, `RESET_SERVICE`, etc.).
 
-## 4. Neural Architecture & Presets
+### 7.3 Confidence Threshold Sweep (`--escalate-confidence-threshold`):
+Evaluated on validation split with policy fallback:
+| Threshold ($\tau$) | Overall Accuracy | Unnecessary ESC Rate | Unsafe Action Rate |
+| :---: | :---: | :---: | :---: |
+| 0.0 | 96.50% | 4.20% | 0.00% |
+| 0.2 | 96.50% | 4.20% | 0.00% |
+| 0.4 | 96.50% | 4.20% | 0.00% |
+| 0.6 | 96.50% | 4.20% | 0.00% |
+| 0.8 | 96.50% | 4.20% | 0.00% |
+| 0.9 | 96.50% | 4.20% | 0.00% |
 
-RecoverBrain uses a modern decoder-only transformer architecture built without external framework bloat:
-
-```
-Input Tokens (uint16)
-       |
-       v
-+-------------------------------+
-|  Token Embeddings (d_model)   | <---+ (Tied LM Head Weights)
-+---------------+---------------+     |
-                |                     |
-                v                     |
-+-------------------------------+     |
-|   Transformer Blocks:         |     |
-|   - Pre-RMSNorm               |     |
-|   - Causal Multi-Head Attn    |     |
-|     (RoPE + FlashAttention)   |     |
-|   - Residual Add              |     |
-|   - Pre-RMSNorm               |     |
-|   - SwiGLU Feed-Forward       |     |
-|   - Residual Add              |     |
-+---------------+---------------+     |
-                |                     |
-                v                     |
-+-------------------------------+     |
-|     Final RMSNorm (d_model)   |     |
-+---------------+---------------+     |
-                |                     |
-                v                     |
-+-------------------------------+     |
-|  LM Head Projection (vocab)   | ----+
-+---------------+---------------+
-                |
-                v
-        Next Token Logits
-```
-
-### Model Scaling Presets:
-| Parameter | `tiny` | `small` | `base` |
-| :--- | :---: | :---: | :---: |
-| Layers ($N_{\text{layers}}$) | 4 | 8 | 12 |
-| Heads ($N_{\text{heads}}$) | 4 | 6 | 12 |
-| Hidden Dim ($d_{\text{model}}$) | 128 | 384 | 768 |
-| FFN Dim ($d_{\text{ff}}$) | 768 | 1,800 | 2,048 |
-| Vocab Size | 4,096 | 8,192 | 16,384 |
-| Target Parameter Count | ~2M | ~25M | ~97M |
-| **Exact Parameters** | **1,967,232** | **24,459,648** | **97,536,768** |
-
----
-
-## 5. Post-Fix Empirical Evaluation Results
-
-Evaluated on the full 2,500 samples per split (7,500 total evaluation instances per model):
-
-### Preset `base` (97.5M Parameters):
-- **Validation Split (2,500 samples)**:
-  - Accuracy: **100.00%** (beats majority baseline 20.00% by +80.00%)
-  - Macro-F1: **100.00%**
-  - Balanced Accuracy: **100.00%**
-  - Disagreement Rate: **0.00%**
-  - Unnecessary ESCALATE Rate: **0.00% (0 / 2,000)**
-  - Confusion Matrix: 500/500 across all 5 classes.
-- **Test Split (2,500 samples)**:
-  - Accuracy: **100.00%** (beats majority baseline 20.00% by +80.00%)
-  - Macro-F1: **100.00%**
-  - Balanced Accuracy: **100.00%**
-  - Disagreement Rate: **0.00%**
-  - Unnecessary ESCALATE Rate: **0.00% (0 / 2,000)**
-  - Confusion Matrix: 500/500 across all 5 classes.
-- **Novel Generalization Split (2,500 samples)**:
-  - Accuracy: **95.68%** (beats majority baseline 20.00% by +75.68%)
-  - Macro-F1: **95.58%**
-  - Balanced Accuracy: **95.68%**
-  - Disagreement Rate: **4.32%** (108 disagreements out of 2,500 samples)
-  - Unnecessary ESCALATE Rate: **0.00% (0 / 2,000)**
-  - Per-Class F1: ESCALATE (100.0%), RESET_SERVICE (98.52%), RESTORE_FILE (91.49%), RETRY (100.0%), SANITIZE_DATA (87.89%).
-
-### Preset `tiny` (1.97M Parameters):
-- Validation Accuracy: **100.00%** (Macro-F1: 100.00%)
-- Test Accuracy: **100.00%** (Macro-F1: 100.00%)
-- Novel Generalization Accuracy: **100.00%** (Macro-F1: 100.00%)
-- Unnecessary ESCALATE Rate: **0.00%** across all splits.
-
-### Workflow-Level Benchmark (200 Seeded Workflows):
-- **Baseline Deterministic Success Rate**: 75.00% (150 / 200)
-- **Advisor-Enabled Success Rate**: 75.00% (150 / 200)
-- **Workflow Status Agreement Rate**: **100.00%** (200 / 200)
-
----
-
-## 6. Documented Multimodal Extension Point: Vision Sensor Signal
-
-RecoverBrain defines a clean architectural extension point in `BrainAdvisor.propose_strategy`:
-```python
-def propose_strategy(
-    self,
-    observation: dict[str, Any],
-    vision_signal: dict[str, Any] | None = None,
-) -> tuple[str, str, float]:
-```
-In future hardware-in-the-loop deployments, optical camera inspections (e.g., YOLO bounding box telemetry identifying physical connector disconnections, loose cables, or overheating LED indicators) can be seamlessly appended to `observation["vision_signal"]` without requiring engine re-architecting.
+### 7.4 Workflow-Level Benchmark (200 Seeded Workflows):
+- **Baseline Deterministic Recovery Success Rate**: **76.50%** (153 / 200)
+- **Advisor Recovery Success Rate**: **72.00%** (144 / 200)
+- **Baseline Escalation Rate**: 23.50%
+- **Advisor Escalation Rate**: 28.00%
+- **Unnecessary Escalation Rate**: **4.50%** (9 / 200 workflows where advisor introduced conservative safety escalations)
+- **Status Agreement Rate**: **95.50%** (191 / 200)

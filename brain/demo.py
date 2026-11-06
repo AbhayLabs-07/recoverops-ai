@@ -54,7 +54,17 @@ def run_benchmark_200(
         wf_rng = random.Random(wf_seed)
 
         # Generate a synthetic multi-task workflow with varying recoverable and unrecoverable conditions
-        scenario = wf_rng.choice(["clean", "transient_svc", "timeout", "missing_file", "invalid_data", "unrec", "ambiguous_verif"])
+        scenario = wf_rng.choice([
+            "clean",
+            "transient_svc",
+            "timeout",
+            "missing_file",
+            "invalid_data",
+            "rate_limited",
+            "deadlock",
+            "unrec",
+            "ambiguous_verif",
+        ])
         budget = wf_rng.randint(2, 4)
 
         if scenario == "clean":
@@ -74,6 +84,22 @@ def run_benchmark_200(
                 TaskAction.TIMEOUT,
                 parameters={"succeed_on_attempt": 2},
                 success_criteria=SuccessCriteria(CriterionType.NON_EMPTY_OUTPUT),
+            )
+        elif scenario == "rate_limited":
+            t = Task(
+                "t1",
+                "Rate Limited API",
+                TaskAction.RATE_LIMITED,
+                parameters={"succeed_on_attempt": 2},
+                success_criteria=SuccessCriteria(CriterionType.NON_EMPTY_OUTPUT),
+            )
+        elif scenario == "deadlock":
+            t = Task(
+                "t1",
+                "Transactional Commit",
+                TaskAction.DEADLOCK,
+                parameters={"output": {"transaction": "committed", "replayed": True}},
+                success_criteria=SuccessCriteria(CriterionType.OUTPUT_EQUALS, expected={"transaction": "committed", "replayed": True}),
             )
         elif scenario == "missing_file":
             t = Task(
@@ -135,11 +161,17 @@ def run_benchmark_200(
 
     base_rate = (baseline_succeeded / num_workflows) * 100.0
     adv_rate = (advisor_succeeded / num_workflows) * 100.0
+    base_esc_rate = ((num_workflows - baseline_succeeded) / num_workflows) * 100.0
+    adv_esc_rate = ((num_workflows - advisor_succeeded) / num_workflows) * 100.0
     agreement_rate = (agreements / num_workflows) * 100.0
+    unnecessary_esc_rate = max(0.0, base_rate - adv_rate)
 
     print(f"  * Total Seeded Workflows Evaluated:  {num_workflows}")
     print(f"  * Baseline Recovery Success Rate:    {base_rate:.2f}% ({baseline_succeeded}/{num_workflows})")
     print(f"  * Advisor Recovery Success Rate:     {adv_rate:.2f}% ({advisor_succeeded}/{num_workflows})")
+    print(f"  * Baseline Escalation Rate:          {base_esc_rate:.2f}%")
+    print(f"  * Advisor Escalation Rate:           {adv_esc_rate:.2f}%")
+    print(f"  * Unnecessary Escalation Rate:       {unnecessary_esc_rate:.2f}%")
     print(f"  * Status Agreement Rate:             {agreement_rate:.2f}% ({agreements}/{num_workflows})")
     print("=" * 70)
 
@@ -147,6 +179,9 @@ def run_benchmark_200(
         "num_workflows": num_workflows,
         "baseline_success_rate": base_rate,
         "advisor_success_rate": adv_rate,
+        "baseline_escalation_rate": base_esc_rate,
+        "advisor_escalation_rate": adv_esc_rate,
+        "unnecessary_escalation_rate": unnecessary_esc_rate,
         "agreement_rate": agreement_rate,
     }
 

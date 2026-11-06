@@ -21,6 +21,9 @@ class TaskAction(Enum):
     MISSING_FILE = "missing_file"
     INVALID_DATA = "invalid_data"
     UNRECOVERABLE = "unrecoverable"
+    RATE_LIMITED = "rate_limited"
+    DEADLOCK = "deadlock"
+    DISK_QUOTA = "disk_quota"
 
 
 class CriterionType(Enum):
@@ -42,6 +45,9 @@ class FailureCategory(Enum):
     INVALID_DATA_ERROR = "invalid_data_error"
     VERIFICATION_FAILURE = "verification_failure"
     UNRECOVERABLE_ERROR = "unrecoverable_error"
+    RATE_LIMIT_EXCEEDED = "rate_limit_exceeded"
+    TRANSACTION_DEADLOCK = "transaction_deadlock"
+    DISK_QUOTA_EXCEEDED = "disk_quota_exceeded"
 
 
 class RecoveryStrategy(Enum):
@@ -51,6 +57,8 @@ class RecoveryStrategy(Enum):
     RESTORE_FILE = "restore_file"
     SANITIZE_DATA = "sanitize_data"
     ESCALATE = "escalate"
+    ROLLBACK_REPLAY = "rollback_replay"
+    PURGE_TEMP = "purge_temp"
 
 
 class TaskStatus(Enum):

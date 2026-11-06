@@ -4,7 +4,7 @@
 > *Phase 1 Core Engine & RecoverBrain Transformer Architecture*
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
-[![Tests](https://img.shields.io/badge/tests-50%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-70%20passed-brightgreen.svg)]()
 [![Dependencies](https://img.shields.io/badge/dependencies-zero%20third--party%20(stdlib%20only)-success.svg)]()
 [![Security](https://img.shields.io/badge/security-sandbox%20isolated-blueviolet.svg)]()
 
@@ -230,13 +230,13 @@ RecoverOps AI reads optional settings directly from environment variables withou
 
 ## 10. Limitations & Phase 2 Roadmap
 
-### Current Limitations
-- **Synchronous Execution**: Tasks run in sequential order; concurrent parallel branch execution is scheduled for Phase 2.
-- **Closed Action Vocabulary**: Remediation strategies are limited to `RETRY`, `RESET_SERVICE`, `RESTORE_FILE`, `SANITIZE_DATA`, and `ESCALATE`.
-- **In-Memory Simulator**: Fault injection simulates network and hardware states within the local process space.
+### Current Scope & Capabilities
+- **Synchronous Execution**: Tasks run in deterministic sequential order; concurrent parallel branch execution is scheduled for Phase 2.
+- **Closed Action Vocabulary**: Remediation strategies encompass `RETRY`, `RESET_SERVICE`, `RESTORE_FILE`, `SANITIZE_DATA`, `ROLLBACK_REPLAY`, `PURGE_TEMP`, and `ESCALATE`.
+- **Sequential History-Aware Neural Advisor**: RecoverBrain (up to 97.5M parameters) advises strategy selection under strict deterministic oversight, beating stateless lookup tables on history-dependent failure cases.
+- **In-Memory Simulator**: Fault injection simulates network, rate limiting, transactional deadlocks, and disk quota states within the local process space.
 
 ### Phase 2 Roadmap
-- **RecoverBrain Integration**: Deep transformer advising strategy selection under strict deterministic oversight.
-- **Vision Fault Telemetry**: Integrating multimodal sensor telemetry (e.g., optical/hardware inspection signals).
-- **Pluggable Runners**: Secure worker adapters for external deterministic runtimes.
+- **Pluggable Runners**: Secure worker adapters for external shell, containerized, and binary execution runtimes outside the simulated sandbox.
+- **Vision Fault Telemetry**: Integrating optical and hardware inspection sensor signals via `BrainAdvisor.propose_strategy(..., vision_signal=...)`.
 

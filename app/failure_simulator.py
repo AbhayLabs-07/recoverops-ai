@@ -55,6 +55,10 @@ class FailureSimulator:
         self._service_ready: dict[str, bool] = {}
         self._sanitized_data: dict[str, dict[str, Any]] = {}
         self._restored_files: set[str] = set()
+        self._logical_backoffs: dict[str, int] = {}
+        self._deadlocks_resolved: set[str] = set()
+        self._sandbox_temp_files: set[str] = set()
+        self._quota_resolved: set[str] = set()
 
     def resolve_safe_path(self, relative_path: str) -> Path:
         """Resolve a path strictly inside the sandbox root.
@@ -268,6 +272,100 @@ class FailureSimulator:
                 error_message=msg,
             )
 
+        if action == TaskAction.RATE_LIMITED:
+            succeed_on_attempt = params.get("succeed_on_attempt", 2)
+            backoff_step = self._logical_backoffs.get(task.id, 0) + 1
+            self._logical_backoffs[task.id] = backoff_step
+
+            if attempt_number >= succeed_on_attempt:
+                output = params.get(
+                    "output",
+                    {"rate_limit_cleared": True, "logical_backoff_step": backoff_step},
+                )
+                return ExecutionResult(
+                    task_id=task.id,
+                    attempt_number=attempt_number,
+                    action=action,
+                    return_value=output,
+                    exception_raised=False,
+                    error_code=FailureCategory.NONE,
+                    error_message=None,
+                )
+
+            msg = params.get(
+                "error_message",
+                f"Rate limit exceeded (HTTP 429). Logical backoff step: {backoff_step}",
+            )
+            return ExecutionResult(
+                task_id=task.id,
+                attempt_number=attempt_number,
+                action=action,
+                return_value=None,
+                exception_raised=True,
+                error_code=FailureCategory.RATE_LIMIT_EXCEEDED,
+                error_message=msg,
+            )
+
+        if action == TaskAction.DEADLOCK:
+            if task.id in self._deadlocks_resolved:
+                output = params.get(
+                    "output",
+                    {"transaction": "committed", "replayed": True},
+                )
+                return ExecutionResult(
+                    task_id=task.id,
+                    attempt_number=attempt_number,
+                    action=action,
+                    return_value=output,
+                    exception_raised=False,
+                    error_code=FailureCategory.NONE,
+                    error_message=None,
+                )
+
+            msg = params.get(
+                "error_message",
+                "Transaction deadlock detected on SQLite table lock; rollback required",
+            )
+            return ExecutionResult(
+                task_id=task.id,
+                attempt_number=attempt_number,
+                action=action,
+                return_value=None,
+                exception_raised=True,
+                error_code=FailureCategory.TRANSACTION_DEADLOCK,
+                error_message=msg,
+            )
+
+        if action == TaskAction.DISK_QUOTA:
+            if task.id in self._quota_resolved:
+                output = params.get(
+                    "output",
+                    {"disk_space_available": True, "quota_cleared": True},
+                )
+                return ExecutionResult(
+                    task_id=task.id,
+                    attempt_number=attempt_number,
+                    action=action,
+                    return_value=output,
+                    exception_raised=False,
+                    error_code=FailureCategory.NONE,
+                    error_message=None,
+                )
+
+            msg = params.get(
+                "error_message",
+                "Disk quota exceeded: temporary workspace storage full (99.8% capacity)",
+            )
+            return ExecutionResult(
+                task_id=task.id,
+                attempt_number=attempt_number,
+                action=action,
+                return_value=None,
+                exception_raised=True,
+                error_code=FailureCategory.DISK_QUOTA_EXCEEDED,
+                error_message=msg,
+            )
+
         raise ValueError(f"Unsupported action: {action}")
 
     def reset_service(self, task: Task) -> str:
@@ -313,6 +411,35 @@ class FailureSimulator:
 
         self._sanitized_data[task.id] = clean
         return f"Payload sanitized with keys {sorted(clean.keys())} for task '{task.id}'"
+
+    def register_sandbox_temp_file(self, relative_path: str, content: str = "temp") -> Path:
+        """Register and create a temporary artifact strictly confined to the sandbox."""
+        p = self.resolve_safe_path(relative_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        self._sandbox_temp_files.add(relative_path)
+        return p
+
+    def rollback_replay(self, task: Task) -> str:
+        """Rollback conflicting transaction and allow deterministic replayed execution."""
+        self._deadlocks_resolved.add(task.id)
+        return f"Transaction deadlock resolved: rolled back and prepared for replay on task '{task.id}'"
+
+    def purge_temp(self, task: Task) -> str:
+        """Purge ONLY sandbox-registered temporary artifacts, strictly within the sandbox root."""
+        purged_count = 0
+        for rel in list(self._sandbox_temp_files):
+            try:
+                target_p = self.resolve_safe_path(rel)
+                if target_p.is_file():
+                    target_p.unlink()
+                    purged_count += 1
+            except Exception:
+                pass
+            self._sandbox_temp_files.discard(rel)
+
+        self._quota_resolved.add(task.id)
+        return f"Purged {purged_count} sandbox-registered temporary artifacts; disk quota restored for task '{task.id}'"
 
     def is_service_ready(self, task_id: str) -> bool:
         """Query if service is currently online for given task ID."""
