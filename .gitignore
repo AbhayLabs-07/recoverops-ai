@@ -1,0 +1,61 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment variables
+.env
+.env.local
+
+# SQLite Databases & Journals
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Unit test / coverage reporting
+.coverage
+.coverage.*
+.pytest_cache/
+htmlcov/
+
+# Operating System artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# RecoverBrain artifacts & checkpoints
+brain/sandbox/
+*.pt
+*.pth
+*.npy
+

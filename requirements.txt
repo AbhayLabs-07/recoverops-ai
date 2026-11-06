@@ -1,0 +1,16 @@
+# RecoverOps AI - Phase 1 Core Engine Dependencies
+# =====================================================================
+# Phase 1 uses ZERO third-party runtime dependencies.
+# The core engine runs strictly on the Python 3.11 standard library:
+#   - sqlite3 (transactional, relational audit trail with parameterized SQL)
+#   - unittest (deterministic verification and test suite)
+#   - dataclasses, enum, typing (strict models and schemas)
+#   - pathlib, tempfile, shutil (secure sandbox filesystem isolation)
+#   - json, datetime, uuid, contextlib, collections, atexit, logging, os
+#
+# This design guarantees:
+#   1. Air-gapped, offline execution reproducibility
+#   2. Zero supply-chain attack surface
+#   3. Deterministic execution timing without external network variance
+# =====================================================================
+
