@@ -4,7 +4,7 @@
 > *Phase 1 Core Engine & RecoverBrain Transformer Architecture*
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
-[![Tests](https://img.shields.io/badge/tests-44%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-50%20passed-brightgreen.svg)]()
 [![Dependencies](https://img.shields.io/badge/dependencies-zero%20third--party%20(stdlib%20only)-success.svg)]()
 [![Security](https://img.shields.io/badge/security-sandbox%20isolated-blueviolet.svg)]()
 
@@ -158,7 +158,39 @@ docker run --rm recoverops-ai:phase1
 
 ---
 
-## 7. Public API Quickstart
+## 7. Custom Pipeline Demo (config-sync-and-publish)
+
+> **Honest Scope Note**: Phase 1 executes only simulated tasks through `FailureSimulator`'s closed action set, so this is a realistic SIMULATED pipeline. Wrapping genuine production tasks (e.g., live cloud APIs, actual external network requests, or direct shell operations) requires the Phase 2 pluggable task-runner extension point, which is NOT implemented in Phase 1.
+
+The repository includes a multi-task simulated production pipeline modeling `config-sync-and-publish` for a distributed service across five realistic stages:
+1. `fetch-remote-config`: Recovers from network gateway timeouts via `RETRY`.
+2. `restore-local-cache`: Recovers from missing configuration caches via `RESTORE_FILE`.
+3. `validate-config-schema`: Recovers from schema corruption via `SANITIZE_DATA`.
+4. `warm-up-service`: Recovers from backing service outages via `RESET_SERVICE`.
+5. `publish-config`: Non-idempotent (`idempotent=False`) broadcast stage that refuses automated retry if faulted.
+
+### Running Pipeline Scenarios:
+
+```bash
+# 1. Happy path: All 5 tasks succeed on attempt 1 without recoveries
+python -m scripts.custom_pipeline --scenario happy
+
+# 2. Self-healing path: Tasks 1-4 heal within budget (reaches COMPLETED_WITH_RECOVERY)
+python -m scripts.custom_pipeline --scenario healing
+
+# 3. Budget exhaustion: Demonstrates shared workflow budget depletion
+python -m scripts.custom_pipeline --scenario healing --budget 2
+
+# 4. Unsafe fault escalation: Non-idempotent publish fault triggers immediate escalation
+python -m scripts.custom_pipeline --scenario unsafe
+
+# 5. Persistent audit: Save audit trace to a custom SQLite database file
+python -m scripts.custom_pipeline --scenario healing --db ./pipeline_audit.db
+```
+
+---
+
+## 8. Public API Quickstart
 
 ```python
 from app.failure_simulator import FailureSimulator
@@ -188,7 +220,7 @@ print(f"Workflow finished: status={result.status.value}")
 
 ---
 
-## 8. Environmental Configuration
+## 9. Environmental Configuration
 
 RecoverOps AI reads optional settings directly from environment variables without third-party dependencies:
 - `RECOVEROPS_DB_PATH`: Path to persistent SQLite database. If unset, empty, or `:memory:`, a temporary ephemeral SQLite database is created and unlinked on shutdown.
@@ -196,7 +228,7 @@ RecoverOps AI reads optional settings directly from environment variables withou
 
 ---
 
-## 9. Limitations & Phase 2 Roadmap
+## 10. Limitations & Phase 2 Roadmap
 
 ### Current Limitations
 - **Synchronous Execution**: Tasks run in sequential order; concurrent parallel branch execution is scheduled for Phase 2.
