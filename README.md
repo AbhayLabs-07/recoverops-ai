@@ -4,7 +4,7 @@
 > *Phase 1 Core Engine & RecoverBrain Transformer Architecture*
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
-[![Tests](https://img.shields.io/badge/tests-70%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-76%20passed-brightgreen.svg)]()
 [![Dependencies](https://img.shields.io/badge/dependencies-zero%20third--party%20(stdlib%20only)-success.svg)]()
 [![Security](https://img.shields.io/badge/security-sandbox%20isolated-blueviolet.svg)]()
 
@@ -233,8 +233,12 @@ RecoverOps AI reads optional settings directly from environment variables withou
 ### Current Scope & Capabilities
 - **Synchronous Execution**: Tasks run in deterministic sequential order; concurrent parallel branch execution is scheduled for Phase 2.
 - **Closed Action Vocabulary**: Remediation strategies encompass `RETRY`, `RESET_SERVICE`, `RESTORE_FILE`, `SANITIZE_DATA`, `ROLLBACK_REPLAY`, `PURGE_TEMP`, and `ESCALATE`.
-- **Sequential History-Aware Neural Advisor**: RecoverBrain (up to 97.5M parameters) advises strategy selection under strict deterministic oversight, beating stateless lookup tables on history-dependent failure cases.
-- **In-Memory Simulator**: Fault injection simulates network, rate limiting, transactional deadlocks, and disk quota states within the local process space.
+- **Sequential History-Aware Neural Advisor & Decision Tree Baselines**: RecoverBrain (up to 97.5M parameters) advises strategy selection under strict deterministic oversight. Empirical evaluation across 500 paired workflows demonstrated that deterministic guardrails and lightweight Decision Trees achieve identical workflow recovery rates (30.6% [26.7%, 34.8%]) with zero VRAM overhead and microsecond latency.
+- **Outcome-Derived Rollout Oracle**: Evaluates state transitions dynamically through real simulation cloning and scoring rather than static heuristics.
+- **In-Memory Simulator**: Fault injection simulates network, rate limiting, transactional deadlocks, disk quota states, flaky services, and cascaded errors within the local process space.
+
+### Honest Verdict & Deployment Recommendation
+In production automation with strict deterministic guardrails, the 97.5M neural transformer is **not recommended** over pure Python Decision Trees or Logistic Regression baselines due to 7.2 GB VRAM consumption, 150ms inference latency, high seed sensitivity ($\sigma = 14.85\%$), and out-of-distribution hallucination risk (54.83% unsafe error on unseen families with 99.77% overconfidence). RecoverBrain remains in the repository strictly as an experimental research track.
 
 ### Phase 2 Roadmap
 - **Pluggable Runners**: Secure worker adapters for external shell, containerized, and binary execution runtimes outside the simulated sandbox.

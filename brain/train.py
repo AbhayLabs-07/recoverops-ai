@@ -257,20 +257,21 @@ def train(
     print(f"Loaded: train={len(train_data):,} samples, val={len(val_data):,} samples (seq_len={config.max_seq_len})")
 
     if label_shuffle:
-        print("[Control] Applying label shuffle to train targets...")
-        shuffled_targets = []
+        print("[Control] Applying independent random label assignment per example (seeded)...")
+        # Extract candidate target slices
+        candidate_targets = []
         for seq in train_data:
             sep_pos = np.where(seq == SEP_ID)[0]
             if len(sep_pos) > 0:
-                shuffled_targets.append(seq[sep_pos[0] + 1:].copy())
-            else:
-                shuffled_targets.append(seq.copy())
+                candidate_targets.append(seq[sep_pos[0] + 1:].copy())
+
         rng_perm = np.random.RandomState(seed)
-        rng_perm.shuffle(shuffled_targets)
+        # Assign an independent random target drawn uniformly with replacement per example
         for i, seq in enumerate(train_data):
             sep_pos = np.where(seq == SEP_ID)[0]
             if len(sep_pos) > 0:
-                train_data[i, sep_pos[0] + 1:] = shuffled_targets[i]
+                rand_idx = int(rng_perm.randint(0, len(candidate_targets)))
+                train_data[i, sep_pos[0] + 1:] = candidate_targets[rand_idx].copy()
 
     # Determine batch size & gradient accumulation
     if manual_batch_size is not None and manual_grad_accum is not None:

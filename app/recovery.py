@@ -74,6 +74,17 @@ class RecoveryManager:
         if failure_category == FailureCategory.DISK_QUOTA_EXCEEDED:
             return RecoveryStrategy.PURGE_TEMP
 
+        if failure_category == FailureCategory.FLAKY_SERVICE_DEGRADED:
+            # Deterministic policy: reset service state first; model may advise retry with backoff based on history
+            return RecoveryStrategy.RESET_SERVICE
+
+        if failure_category == FailureCategory.PARTIALLY_CORRUPTED_DATA:
+            return RecoveryStrategy.SANITIZE_DATA
+
+        if failure_category == FailureCategory.CASCADED_UPSTREAM_FAILURE:
+            # Cascaded upstream failure cannot be resolved locally without upstream repair -> escalate
+            return RecoveryStrategy.ESCALATE
+
         if failure_category == FailureCategory.VERIFICATION_FAILURE:
             params = task.parameters
             if "sanitized_data" in params:

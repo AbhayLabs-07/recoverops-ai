@@ -159,3 +159,140 @@ Evaluated on validation split with policy fallback:
 - **Advisor Escalation Rate**: 28.00%
 - **Unnecessary Escalation Rate**: **4.50%** (9 / 200 workflows where advisor introduced conservative safety escalations)
 - **Status Agreement Rate**: **95.50%** (191 / 200)
+
+---
+
+## 8. Stage 3: Outcome-Derived Rollout Oracle, Hidden States & Production Verdict
+
+### 8.1 Outcome-Derived Rollout Oracle (`brain/rollout_oracle.py`)
+To eliminate reliance on static rule heuristics, Stage 3 introduces `RolloutOracle`. Rather than relying on human-written policy rules, the rollout oracle evaluates potential remediation actions dynamically by cloning the deterministic simulation state for each candidate strategy:
+1. **Simulation State Cloning**: Clones task metadata, parameters, attempt numbers, and filesystem fixtures within an isolated sandbox environment.
+2. **Strategy Rollout**: Simulates every candidate strategy in the closed vocabulary (`RETRY`, `RESET_SERVICE`, `RESTORE_FILE`, `SANITIZE_DATA`, `ROLLBACK_REPLAY`, `PURGE_TEMP`, `ESCALATE`) through the genuine Phase 1 `FailureSimulator` and `Verifier`.
+3. **Outcome Scoring Formula**:
+   $$\text{Score} = (\text{Verified Success} \times 100) - (\text{Attempts Consumed} \times 10) - (\text{Recoveries Consumed} \times 15) - (\text{Guardrail Violation Penalty})$$
+   - Unsafe or guardrail-violating actions (such as non-idempotent retries or sandbox escapes) receive a score of $-\infty$.
+4. **Deterministic Tie-Breaking**: When multiple strategies yield identical outcome scores, deterministic priority decides:
+   $$\text{RESTORE\_FILE} \succ \text{SANITIZE\_DATA} \succ \text{RESET\_SERVICE} \succ \text{ROLLBACK\_REPLAY} \succ \text{RETRY} \succ \text{PURGE\_TEMP} \succ \text{ESCALATE}$$
+
+---
+
+### 8.2 Hidden-State Dynamics & Additive Failure Families
+Three new failure families with history and sequence dependencies were added to `app/models.py`, `app/failure_simulator.py`, and `app/recovery.py`:
+- **`FLAKY_SERVICE` (`flaky_service_degraded`)**: Fails on initial attempts until `RESET_SERVICE` is applied AND the attempt count reaches `succeed_on_attempt`. Requires observing both service reset history and current attempt.
+- **`PARTIAL_CORRUPTION` (`partially_corrupted_data`)**: Succeeds only after `SANITIZE_DATA` is applied to repair invalid structural fields.
+- **`CASCADING_FAILURE` (`cascaded_upstream_failure`)**: Represents dependent task failure caused by upstream errors. Unrecoverable via local remediation; oracle strictly dictates `ESCALATE`.
+
+All additions maintain stdlib-only purity in `app/` (0 third-party imports verified via AST analysis).
+
+---
+
+### 8.3 Control Verification (Independent Random Shuffle & History Ablation)
+
+#### Independent Label-Shuffle Control:
+- **Redesigned Control**: Rather than an anti-correlated derangement, each sample receives an independent, uniformly drawn random label from the 6 training classes (seeded).
+- **Result**: Accuracy collapses to **16.67%** (matching theoretical random chance $1/6$, with Macro-F1 = 4.76%).
+- **Verification**: Confirms that the Stage 2 control (4.52%) was an accidental derangement, while the true chance baseline is exactly 16.67%.
+
+#### History-Ablation Control:
+Removing history fields (`previous_strategies`, `recoveries_used`, `budget_left`) from the observation:
+| Model / Baseline | Full Context (History Slice) | Ablated (History Slice) | Drop on History Slice | Overall Accuracy Impact |
+| :--- | :---: | :---: | :---: | :---: |
+| **Stateless Lookup** | 0.00% | 0.00% | 0.00% | 73.17% (No change) |
+| **Decision Tree** | 100.00% | 0.00% | **-100.00%** | 96.08% $\to$ 83.33% (-12.75%) |
+| **RecoverBrain Tiny** | 93.46% | 61.44% | **-32.03%** | 91.50% $\to$ 87.67% (-3.83%) |
+
+**Finding**: The Decision Tree is 100% dependent on history features to resolve recurring faults. The neural transformer degrades substantially (-32.03%), demonstrating genuine utilization of sequence tokens.
+
+---
+
+### 8.4 Multi-Seed Training & Statistical Significance (Seeds 42, 100, 2026)
+
+Trained with matched token budgets across 3 independent seeds:
+
+| Model | Seed 42 | Seed 100 | Seed 2026 | Mean ± Std Acc | Mean ± Std Macro-F1 |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **RecoverBrain Tiny (2.1M)** | 26.92% | 91.50% | 75.42% | **64.61% ± 27.45%** | **59.64% ± 31.44%** |
+| **RecoverBrain Base (97.5M)**| 96.50% | 95.67% | 64.58% | **85.58% ± 14.85%** | **84.40% ± 16.56%** |
+| **Decision Tree (NumPy)** | 91.50% | 91.50% | 91.50% | **91.50% ± 0.00%** | **90.91% ± 0.00%** |
+
+#### Paired Bootstrap Significance (Base vs Decision Tree):
+- For Seed 100: RecoverBrain Base achieved 95.67% vs Decision Tree 91.50%.
+- Paired difference: **+4.17% [95% CI: +2.17%, +6.17%]**.
+- However, cross-seed variance in the neural model is massive ($\sigma = 14.85\%$), whereas the deterministic decision tree has zero variance ($\sigma = 0.00\%$) and trains in 4 milliseconds.
+
+---
+
+### 8.5 Error Localization (RecoverBrain Base Seed 42)
+Across 1,200 validation samples, Base made 42 errors (3.50% error rate):
+- **Slice Breakdown**: 100% of errors occurred on `rate_limited` failure episodes.
+- **Error Behavior**: The model predicted `ESCALATE` where the oracle indicated `RETRY` (with backoff).
+- **Safety Impact**: **Zero unsafe actions**. The errors were conservative over-escalations rather than unsafe state mutations.
+
+---
+
+### 8.6 Confidence Threshold Policy Sweep
+Evaluating `--escalate-confidence-threshold` on validation data:
+
+| Threshold ($\tau$) | Accuracy | Macro-F1 | Unnecessary Escalation Rate | Unsafe Action Rate |
+| :---: | :---: | :---: | :---: | :---: |
+| **0.00 - 0.70** | 96.50% | 96.46% | 4.20% | 0.00% |
+| **0.80** | 96.42% | 96.37% | 4.30% | 0.00% |
+| **0.90** | 95.00% | 95.07% | 6.00% | 0.00% |
+| **0.95** | 87.00% | 87.82% | 15.60% | 0.00% |
+
+As the confidence threshold exceeds 0.90, the unnecessary escalation rate surges from 4.20% to 15.60%, degrading pipeline throughput without improving safety (unsafe actions remain 0.00% due to deterministic guardrails).
+
+---
+
+### 8.7 Generalization to Novel & Unseen Families
+
+| Held-Out Dataset | Target / Behavior | Correct | Safe Abstain (`ESCALATE`) | Unsafe Wrong | Mean Confidence |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **`held_out_config_drift`** ($N=600$) | Solvable via `SANITIZE_DATA` | **99.17%** (595/600) | 0.83% (5/600) | **0.00%** (0/600) | $0.9557 \pm 0.0183$ |
+| **`held_out_disk_quota`** ($N=600$) | Unseen strategy `PURGE_TEMP` | **0.00%** (0/600) | 45.17% (271/600) | **54.83%** (329/600) | $0.9977 \pm 0.0014$ |
+
+> [!WARNING]
+> **The Hallucination & Overconfidence Risk**:
+> When facing `config_drift`, the neural model generalizes with 99.17% accuracy. However, when facing an entirely novel fault requiring an unseen action (`disk_quota`), the neural network exhibits extreme overconfidence ($99.77\%$ mean confidence) and hallucinates an inappropriate recovery strategy 54.83% of the time, safely abstaining only 45.17% of the time.
+
+---
+
+### 8.8 Paired Workflow-Level Benchmark (500 Seeded Workflows)
+
+Evaluated across 500 identical seeded workflows with 95% Wilson score confidence intervals:
+
+| Policy | Workflow Recovery Success | 95% Confidence Interval | Escalated Workflows | Mean Recoveries Used |
+| :--- | :---: | :---: | :---: | :---: |
+| **Deterministic Default** | **30.6%** (153/500) | [26.7%, 34.8%] | 347 / 500 | 1.98 |
+| **Majority Class** | **30.6%** (153/500) | [26.7%, 34.8%] | 347 / 500 | 1.98 |
+| **Stateless Lookup** | **30.6%** (153/500) | [26.7%, 34.8%] | 347 / 500 | 1.76 |
+| **Decision Tree (NumPy)** | **30.6%** (153/500) | [26.7%, 34.8%] | 347 / 500 | 1.98 |
+| **Logistic Regression** | **30.6%** (153/500) | [26.7%, 34.8%] | 347 / 500 | 1.76 |
+| **RecoverBrain Advisor** | **30.6%** (153/500) | [26.7%, 34.8%] | 347 / 500 | 1.98 |
+
+---
+
+### 8.9 The Honest Production Verdict: Is the Neural Advisor Worth It?
+
+> [!CAUTION]
+> **VERDICT: The 97.5M Neural Advisor is NOT Worth It in Production over Classical Baselines.**
+> 
+> Across 500 paired workflow executions, **every single policy achieved an identical 30.6% [26.7%, 34.8%] recovery success rate**.
+
+#### Why the Neural Advisor Adds Zero Net Value at the Workflow Level:
+1. **Authoritative Deterministic Guardrails**: Phase 1 guardrails run *before* the advisor. Non-idempotent tasks, unrecoverable faults, attempt limits, and budget caps are enforced unconditionally. The advisor is never allowed to cause a catastrophic error.
+2. **Deterministic Sufficiency**: Where self-healing is possible within budget, simple deterministic rules and lightweight decision trees already recover the workflow.
+3. **Severe Hardware & Latency Overhead**:
+   - RecoverBrain Base requires **7.2 GB of VRAM** and ~150ms inference latency per token.
+   - Decision Tree and Logistic Regression require **0 bytes of VRAM**, evaluate in **< 5 microseconds**, and require zero third-party dependencies (pure NumPy or stdlib).
+4. **Training Instability Across Seeds**:
+   - Neural models showed large sensitivity to initialization seeds ($\sigma = \pm 14.85\%$ for Base, $\pm 27.45\%$ for Tiny).
+   - In contrast, the Decision Tree is 100% deterministic, instant to train, and interpretable.
+5. **Dangerous Out-of-Distribution Overconfidence**:
+   - On novel fault families requiring unseen strategies, RecoverBrain hallucinates invalid recoveries with 99.77% confidence, failing to safely abstain 54.83% of the time.
+
+#### Release Tagging Policy:
+In accordance with Stage 3 engineering directives:
+> *"Only tag the release if the advisor strictly beats the decision tree on hidden-state AND held-out-correct slices with non-overlapping confidence intervals at the workflow level; otherwise, commit untagged and record the honest verdict."*
+
+Because the 95% confidence intervals at the workflow level completely overlap (30.6% [26.7%, 34.8%] for all methods), **this release will remain untagged**. RecoverBrain remains preserved as an experimental research artifact, while the production engine relies on deterministic guardrails and lightweight decision trees.

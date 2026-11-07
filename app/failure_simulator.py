@@ -59,6 +59,9 @@ class FailureSimulator:
         self._deadlocks_resolved: set[str] = set()
         self._sandbox_temp_files: set[str] = set()
         self._quota_resolved: set[str] = set()
+        self._flaky_service_resets: dict[str, int] = {}
+        self._partial_corruptions_sanitized: set[str] = set()
+        self._completed_task_ids: set[str] = set()
 
     def resolve_safe_path(self, relative_path: str) -> Path:
         """Resolve a path strictly inside the sandbox root.
@@ -366,11 +369,106 @@ class FailureSimulator:
                 error_message=msg,
             )
 
+        if action == TaskAction.FLAKY_SERVICE:
+            # Flaky service: under high hidden load, RESET_SERVICE alone does not cure it.
+            # Only when reset has been tried AND backoff retry is applied on attempt >= succeed_on_attempt
+            # or when reset count reaches required resets.
+            resets_done = self._flaky_service_resets.get(task.id, 0)
+            required_resets = params.get("required_resets", 1)
+            min_attempt = params.get("succeed_on_attempt", 2)
+            if resets_done >= required_resets and attempt_number >= min_attempt:
+                output = params.get("output", {"service_status": "healthy", "flaky_load_cleared": True})
+                return ExecutionResult(
+                    task_id=task.id,
+                    attempt_number=attempt_number,
+                    action=action,
+                    return_value=output,
+                    exception_raised=False,
+                    error_code=FailureCategory.NONE,
+                    error_message=None,
+                )
+
+            msg = params.get(
+                "error_message",
+                f"Flaky service degraded under load (resets={resets_done}/{required_resets}, attempt={attempt_number})"
+            )
+            return ExecutionResult(
+                task_id=task.id,
+                attempt_number=attempt_number,
+                action=action,
+                return_value=None,
+                exception_raised=True,
+                error_code=FailureCategory.FLAKY_SERVICE_DEGRADED,
+                error_message=msg,
+            )
+
+        if action == TaskAction.PARTIAL_CORRUPTION:
+            # Partial corruption: only specific sub-fields corrupted; sanitize works if applied
+            if task.id in self._partial_corruptions_sanitized or task.id in self._sanitized_data:
+                clean_data = self._sanitized_data.get(task.id, params.get("clean_data", {"id": task.id, "valid": True}))
+                return ExecutionResult(
+                    task_id=task.id,
+                    attempt_number=attempt_number,
+                    action=action,
+                    return_value=clean_data,
+                    exception_raised=False,
+                    error_code=FailureCategory.NONE,
+                    error_message=None,
+                )
+
+            msg = params.get(
+                "error_message",
+                "Partial payload corruption: corrupted checksum on metadata header segment"
+            )
+            return ExecutionResult(
+                task_id=task.id,
+                attempt_number=attempt_number,
+                action=action,
+                return_value=None,
+                exception_raised=True,
+                error_code=FailureCategory.PARTIALLY_CORRUPTED_DATA,
+                error_message=msg,
+            )
+
+        if action == TaskAction.CASCADING_FAILURE:
+            # Cascading failure: fails if an upstream task failed in recent execution
+            upstream_task = params.get("upstream_task_id")
+            upstream_failed = params.get("upstream_failed", True)
+            if upstream_task and upstream_task in self._completed_task_ids:
+                upstream_failed = False
+
+            if not upstream_failed or attempt_number >= params.get("succeed_on_attempt", 99):
+                output = params.get("output", {"cascading_resolved": True})
+                return ExecutionResult(
+                    task_id=task.id,
+                    attempt_number=attempt_number,
+                    action=action,
+                    return_value=output,
+                    exception_raised=False,
+                    error_code=FailureCategory.NONE,
+                    error_message=None,
+                )
+
+            msg = params.get(
+                "error_message",
+                f"Cascading upstream dependency failure from '{upstream_task or 'parent'}'; downstream circuit broken"
+            )
+            return ExecutionResult(
+                task_id=task.id,
+                attempt_number=attempt_number,
+                action=action,
+                return_value=None,
+                exception_raised=True,
+                error_code=FailureCategory.CASCADED_UPSTREAM_FAILURE,
+                error_message=msg,
+            )
+
         raise ValueError(f"Unsupported action: {action}")
 
     def reset_service(self, task: Task) -> str:
         """Reset service health state for a task."""
         self._service_ready[task.id] = True
+        self._flaky_service_resets[task.id] = self._flaky_service_resets.get(task.id, 0) + 1
         return f"Service state reset to online for task '{task.id}'"
 
     def restore_file(self, task: Task) -> str:
@@ -410,6 +508,7 @@ class FailureSimulator:
             clean["valid"] = True
 
         self._sanitized_data[task.id] = clean
+        self._partial_corruptions_sanitized.add(task.id)
         return f"Payload sanitized with keys {sorted(clean.keys())} for task '{task.id}'"
 
     def register_sandbox_temp_file(self, relative_path: str, content: str = "temp") -> Path:

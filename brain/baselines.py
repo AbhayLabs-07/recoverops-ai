@@ -21,6 +21,9 @@ CATEGORIES = [
     "rate_limit_exceeded",
     "transaction_deadlock",
     "disk_quota_exceeded",
+    "flaky_service_degraded",
+    "partially_corrupted_data",
+    "cascaded_upstream_failure",
     "verification_failure",
     "unrecoverable_error",
     "none",
@@ -63,6 +66,9 @@ class StatelessLookupBaseline:
         "rate_limit_exceeded": "RETRY",
         "transaction_deadlock": "ROLLBACK_REPLAY",
         "disk_quota_exceeded": "PURGE_TEMP",
+        "flaky_service_degraded": "RESET_SERVICE",
+        "partially_corrupted_data": "SANITIZE_DATA",
+        "cascaded_upstream_failure": "ESCALATE",
         "verification_failure": "ESCALATE",
         "unrecoverable_error": "ESCALATE",
         "none": "ESCALATE",
@@ -220,6 +226,88 @@ class DecisionTreeBaseline:
             else:
                 node = node.right
         return node.prediction
+
+
+class LogisticRegressionBaseline:
+    """Multiclass Logistic Regression (Softmax) baseline in pure NumPy with L2 regularization."""
+
+    def __init__(self, lr: float = 0.05, epochs: int = 250, l2: float = 1e-4) -> None:
+        self.lr = lr
+        self.epochs = epochs
+        self.l2 = l2
+        self.weights: np.ndarray | None = None  # (n_features, n_classes)
+        self.bias: np.ndarray | None = None     # (n_classes,)
+        self.classes: list[str] = list(STRATEGIES)
+
+    def fit(self, episodes: list[dict[str, Any]], targets: list[str]) -> None:
+        if not episodes or not targets:
+            return
+        X = np.stack([extract_features(e) for e in episodes])
+        n_samples, n_features = X.shape
+
+        # Standardize features
+        self.mean = np.mean(X, axis=0)
+        self.std = np.std(X, axis=0) + 1e-6
+        X_norm = (X - self.mean) / self.std
+
+        # Map targets to class indices
+        self.classes = sorted(list(set(targets)))
+        class_to_idx = {c: i for i, c in enumerate(self.classes)}
+        K = len(self.classes)
+
+        # One-hot encoded targets
+        Y = np.zeros((n_samples, K), dtype=np.float32)
+        for i, t in enumerate(targets):
+            if t in class_to_idx:
+                Y[i, class_to_idx[t]] = 1.0
+
+        # Initialize weights
+        rng = np.random.RandomState(42)
+        self.weights = rng.normal(0, 0.01, (n_features, K)).astype(np.float32)
+        self.bias = np.zeros(K, dtype=np.float32)
+
+        # Gradient Descent with Momentum
+        v_w = np.zeros_like(self.weights)
+        v_b = np.zeros_like(self.bias)
+        momentum = 0.9
+
+        for epoch in range(self.epochs):
+            # Forward: logits = X W + b
+            logits = np.dot(X_norm, self.weights) + self.bias
+            # Softmax with numerical stability
+            logits_shifted = logits - np.max(logits, axis=1, keepdims=True)
+            exp_logits = np.exp(logits_shifted)
+            probs = exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
+
+            # Gradient: (Probs - Y) / N
+            grad = (probs - Y) / n_samples
+            grad_w = np.dot(X_norm.T, grad) + self.l2 * self.weights
+            grad_b = np.sum(grad, axis=0)
+
+            v_w = momentum * v_w + self.lr * grad_w
+            v_b = momentum * v_b + self.lr * grad_b
+            self.weights -= v_w
+            self.bias -= v_b
+
+    def predict(self, episode: dict[str, Any]) -> str:
+        if self.weights is None or self.bias is None:
+            return "ESCALATE"
+        x = extract_features(episode)
+        x_norm = (x - self.mean) / self.std
+        logits = np.dot(x_norm, self.weights) + self.bias
+        idx = int(np.argmax(logits))
+        return self.classes[idx]
+
+    def predict_proba(self, episode: dict[str, Any]) -> tuple[str, float]:
+        if self.weights is None or self.bias is None:
+            return "ESCALATE", 1.0
+        x = extract_features(episode)
+        x_norm = (x - self.mean) / self.std
+        logits = np.dot(x_norm, self.weights) + self.bias
+        logits_shifted = logits - np.max(logits)
+        probs = np.exp(logits_shifted) / np.sum(np.exp(logits_shifted))
+        idx = int(np.argmax(probs))
+        return self.classes[idx], float(probs[idx])
 
 
 def evaluate_baseline_predictions(

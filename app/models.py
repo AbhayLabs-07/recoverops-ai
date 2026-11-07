@@ -24,6 +24,9 @@ class TaskAction(Enum):
     RATE_LIMITED = "rate_limited"
     DEADLOCK = "deadlock"
     DISK_QUOTA = "disk_quota"
+    FLAKY_SERVICE = "flaky_service"
+    PARTIAL_CORRUPTION = "partial_corruption"
+    CASCADING_FAILURE = "cascading_failure"
 
 
 class CriterionType(Enum):
@@ -48,6 +51,9 @@ class FailureCategory(Enum):
     RATE_LIMIT_EXCEEDED = "rate_limit_exceeded"
     TRANSACTION_DEADLOCK = "transaction_deadlock"
     DISK_QUOTA_EXCEEDED = "disk_quota_exceeded"
+    FLAKY_SERVICE_DEGRADED = "flaky_service_degraded"
+    PARTIALLY_CORRUPTED_DATA = "partially_corrupted_data"
+    CASCADED_UPSTREAM_FAILURE = "cascaded_upstream_failure"
 
 
 class RecoveryStrategy(Enum):
